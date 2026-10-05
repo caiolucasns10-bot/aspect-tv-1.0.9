@@ -1,24 +1,78 @@
 name: Build APK
-on: [push, workflow_dispatch]
+on:
+  push:
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 20
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 21 }
-      - name: Projeto Capacitor
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Preparar projeto
         run: |
+          pip install pillow
+          mkdir -p www resources
+          cp index.html www/index.html
           npm init -y
-          npm i @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
-          mkdir -p www && cp aspect-player-v31.html www/index.html
-          npx cap init Aspect com.aspect.player --web-dir=www
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/app@6
+          cat > capacitor.config.json <<'CFG'
+          {
+            "appId": "com.aspect.player",
+            "appName": "Aspect",
+            "webDir": "www",
+            "backgroundColor": "#050505",
+            "server": { "androidScheme": "http", "cleartext": true },
+            "android": { "allowMixedContent": true },
+            "plugins": { "CapacitorHttp": { "enabled": true } }
+          }
+          CFG
+          cat > prep.py <<'PY'
+          import re,base64
+          from PIL import Image
+          h=open('index.html',encoding='utf-8').read()
+          m=re.search(r'rel="icon" type="image/png" href="data:image/png;base64,([^"]+)"',h)
+          open('resources/icon.png','wb').write(base64.b64decode(m.group(1)))
+          ic=Image.open('resources/icon.png').convert('RGBA')
+          b=Image.new('RGBA',(320,180),(5,5,5,255))
+          i2=ic.resize((140,140)); b.paste(i2,(90,20),i2)
+          b.convert('RGB').save('resources/banner.png')
+          PY
+          cat > patch.py <<'PY'
+          import shutil,os
+          from PIL import Image
+          base='android/app/src/main'
+          p=base+'/AndroidManifest.xml'
+          s=open(p,encoding='utf-8').read()
+          feat='<uses-feature android:name="android.software.leanback" android:required="false" />\n    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    '
+          s=s.replace('<application',feat+'<application',1)
+          s=s.replace('<application','<application android:usesCleartextTraffic="true" android:banner="@drawable/banner"',1)
+          s=s.replace('<category android:name="android.intent.category.LAUNCHER" />','<category android:name="android.intent.category.LAUNCHER" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />',1)
+          open(p,'w',encoding='utf-8').write(s)
+          os.makedirs(base+'/res/drawable',exist_ok=True)
+          shutil.copy('resources/banner.png',base+'/res/drawable/banner.png')
+          shutil.rmtree(base+'/res/mipmap-anydpi-v26',ignore_errors=True)
+          ic=Image.open('resources/icon.png').convert('RGBA')
+          for d,sz in {'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}.items():
+              for n in ('ic_launcher','ic_launcher_round','ic_launcher_foreground'):
+                  f=base+'/res/mipmap-'+d+'/'+n+'.png'
+                  if os.path.exists(f): ic.resize((sz,sz)).save(f)
+          PY
+          python3 prep.py
           npx cap add android
-      - name: Patch nativo (tela cheia, notch, barras, PiP)
-        run: python3 scripts/patch_android.py
-      - name: Compilar
-        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+          python3 patch.py
+          npx cap sync android
+      - name: Compilar APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
-        with: { name: aspect-apk, path: android/app/build/outputs/apk/debug/*.apk }
+        with:
+          name: Aspect-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
